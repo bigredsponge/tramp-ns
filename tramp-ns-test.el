@@ -107,9 +107,9 @@
     (with-temp-buffer
       (let ((process-connection-type nil)
             (p (start-file-process "tramp-ns-async" (current-buffer)
-                                   "sh" "-c" "printf async")))
+                                   "sh" "-c" "printf \"async $INSIDE_EMACS\"")))
         (tramp-ns-test-wait p)
-        (should (string-prefix-p "async" (buffer-string)))))
+        (should (string-match-p "\\`async .*,tramp:" (buffer-string)))))
     (with-temp-buffer
       (should (zerop (shell-command "printf shell" (current-buffer))))
       (should (equal (buffer-string) "shell")))

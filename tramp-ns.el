@@ -121,6 +121,8 @@ with stdin open, without allocating a terminal.  Optional :timeout overrides
                   (error "Environment did not start: %s"
                          (with-current-buffer (process-buffer p) (buffer-string))))
                 (process-put p 'tramp-ns-pid pid)
+                (tramp-set-connection-property
+                 vec "login-args" (list (tramp-ns--login-args pid)))
                 (process-put p 'tramp-ns-environment
                              (split-string
                               (tramp-ns--read (format "/proc/%d/environ" pid))
@@ -215,17 +217,13 @@ VISIT, LOCKNAME and MUSTBENEW are as for `write-region'."
            process-environment)
           (process-get p 'tramp-ns-environment)))
 
-(defun tramp-ns--command (vec)
-  "Return the nsenter command prefix for VEC's working directory."
-  (let* ((p (tramp-ns--connection vec))
-         (pid (process-get p 'tramp-ns-pid))
-         (base (format "/proc/%d/ns/" pid))
-         (flags '(("user" . "--user") ("mnt" . "--mount")
-                  ("uts" . "--uts") ("ipc" . "--ipc") ("net" . "--net")
-                  ("pid" . "--pid") ("cgroup" . "--cgroup") ("time" . "--time"))))
-    (append (list (executable-find "nsenter") "-t" (number-to-string pid)
-                  "-r" "--preserve-credentials"
-                  (concat "--wdns=" (tramp-file-name-localname vec)))
+(defun tramp-ns--login-args (pid)
+  "Return nsenter's arguments for joining PID's namespaces."
+  (let ((base (format "/proc/%d/ns/" pid))
+        (flags '(("user" . "--user") ("mnt" . "--mount")
+                 ("uts" . "--uts") ("ipc" . "--ipc") ("net" . "--net")
+                 ("pid" . "--pid") ("cgroup" . "--cgroup") ("time" . "--time"))))
+    (append (list "-t" (number-to-string pid) "-r" "--preserve-credentials")
             (cl-loop for (name . flag) in flags
                      unless (equal (file-symlink-p (concat base name))
                                    (file-symlink-p (concat "/proc/self/ns/" name)))
@@ -235,25 +233,24 @@ VISIT, LOCKNAME and MUSTBENEW are as for `write-region'."
 (defun tramp-ns--process-file (program &optional infile destination display &rest args)
   "Run PROGRAM with INFILE, DESTINATION, DISPLAY and ARGS inside the environment."
   (let* ((vec (tramp-dissect-file-name default-directory))
-         (command (tramp-ns--command vec))
+         (p (tramp-ns--connection vec))
          (infile (and infile (tramp-ns--local infile)))
          (destination (if (and (consp destination) (stringp (cadr destination)))
                           (list (car destination) (tramp-ns--local (cadr destination)))
                         destination))
-         (process-environment (tramp-ns--environment (tramp-ns--connection vec)))
+         (process-environment (tramp-ns--environment p))
          (default-directory "/"))
-    (apply #'call-process (car command) infile destination display
-           (append (cdr command) (list program) args))))
+    (apply #'call-process (executable-find "nsenter") infile destination display
+           (concat "--wdns=" (tramp-file-name-localname vec))
+           (append (tramp-ns--login-args (process-get p 'tramp-ns-pid))
+                   (list program) args))))
 
 (defun tramp-ns--make-process (&rest args)
-  "Run an asynchronous environment process with `make-process' ARGS."
-  (let* ((vec (tramp-dissect-file-name default-directory))
-         (command (append (tramp-ns--command vec) (plist-get args :command)))
-         (process-environment (tramp-ns--environment (tramp-ns--connection vec)))
-         (default-directory "/")
-         (p (apply #'make-process (plist-put (copy-sequence args) :command command))))
-    (process-put p 'remote-command (plist-get args :command))
-    p))
+  "Like `tramp-handle-make-process' for ARGS, with the inner environment."
+  (let ((process-environment (tramp-ns--environment
+                              (tramp-ns--connection
+                               (tramp-dissect-file-name default-directory)))))
+    (apply #'tramp-handle-make-process args)))
 
 (defun tramp-ns--home (vec &optional _user)
   "Return the environment's HOME for VEC."
@@ -310,7 +307,9 @@ VISIT, LOCKNAME and MUSTBENEW are as for `write-region'."
   (mapcar (lambda (environment) (list nil (car environment)))
           tramp-ns-environments))
 
-(add-to-list 'tramp-methods '("ns" (tramp-remote-shell "/bin/sh")
+(add-to-list 'tramp-methods '("ns" (tramp-login-program "nsenter")
+                            (tramp-direct-async ("/bin/sh" "-c"))
+                            (tramp-remote-shell "/bin/sh")
                             (tramp-remote-shell-args ("-c"))))
 (tramp-set-completion-function
  "ns" '((tramp-ns--complete-environments "")))
